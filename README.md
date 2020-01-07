@@ -21,7 +21,7 @@ If you are able to run this in any other environments than Linux, let me know.
 
 # Running
 
-./KeempleScrapper.pl <conf path> <device name> <switch index 1..n> <state 1|0 (true=1)>
+./KeempleScrapper.pl <conf_path> <device_name> <switch_index_1..n> <state_1|0_(true=1)>
   
 ./KeempleScrapper.pl ~/.keempleAPI.conf 'światło salon' 2 1
 
