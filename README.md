@@ -37,3 +37,4 @@ Pull requests are welcome.
 * Selecting a gateway via command line.
 * Standalone server which would keep a persistent session and allow queued commands execution.
 * Reading values (not limited to switches!).
+* True headless mode (browser window visible only with some "--debug" option.)
