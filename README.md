@@ -1,6 +1,10 @@
 # keemple_api
 CLI interface for Keemple/OBLO smarthouse solution written in Perl.
 
+# License
+
+IDGAF what you do with it or what it does to you. It's your problem, not mine. You can tell me if you do something cool, though.
+
 # Installation
 
 cpan install File::Slurp;
