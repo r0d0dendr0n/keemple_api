@@ -33,7 +33,7 @@ sub new {
 sub DESTROY {   
     my $self = shift; 
     $self->dbgMsg('destroying...');
-#    $self->cleanup();  
+#    $self->cleanup(); # Somehow this does not kill the browser reliably.
 } 
 
 sub initDriver {
@@ -62,6 +62,7 @@ sub initDriver {
 	
 	$driver->set_implicit_wait_timeout(5000);
 	$self->{driver} = $driver;
+	$self->{driver}->set_window_size(1024, 768);
 	$self->{driver}->get('about:blank');
 	return $driver;
 }
@@ -191,50 +192,59 @@ sub flipSwitch {
 	#Kontakt stan przełącznika:
 	#   /html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span/md-whiteframe/div/div[1]/div/div/div/md-switch
 	
-	my $switchStateElement = $self->itemExists('/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div['.$deviceSwitchIdx.']/div/div/div/md-switch', 'xpath');
+	my $switchStateXPath = '/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div['.$deviceSwitchIdx.']/div/div/div/md-switch';
+	my $switchStateElement = $self->itemExists($switchStateXPath, 'xpath');
 	if(!$switchStateElement){
 		$self->dbgMsg('Unable to fetch switch current state');
 		return 0;
 	}
 	my $switchState = $switchStateElement->get_attribute('aria-checked', 1);
 	print 'Was: '.($switchState eq 'true' ? 1 : 0).' (raw value: '.$switchState.')'."\n";
-	if(($targetState eq '1' && $switchState ne 'true') || ($targetState eq '0' && $switchState ne 'false')){
-		print 'Switching state to: '.$targetState.'.'."\n";
-		# Try light switch
-		my $switchField = $self->itemExists('/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div['.$deviceSwitchIdx.']/div/div/div', 'xpath');
-		if($switchField){
-			print 'Switch flipped!'."\n"; # TODO 2nd check of switchStateElement?
-			$switchField->click();
-		}else{
-			$self->dbgMsg('Error: Unable to flip switch!'."\n");
-			return 0;
-		}
-	}else{
+	if(($targetState eq '1' && $switchState eq 'true') || ($targetState eq '0' && $switchState eq 'false')){
 		print 'Already in target state: '.$targetState.'.'."\n";
+		return 1;
 	}
+	
+	print 'Switching state to: '.$targetState.'.'."\n";
+	# Try light switch
+	my $switchXPath = '/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div['.$deviceSwitchIdx.']/div/div/div';
+	my $switchField = $self->itemExists($switchXPath, 'xpath');
+	if($switchField){
+#		$self->{driver}->mouse_move_to_location($switchField, 10, 10);
+#		$self->{driver}->click();
+		# https://stackoverflow.com/questions/44912203/selenium-web-driver-java-element-is-not-clickable-at-point-x-y-other-elem
+		$switchField->click();
+		print 'Switch flipped!'."\n"; # TODO 2nd check of switchStateElement?
+	}else{
+		$self->dbgMsg('Error: Unable to flip switch!'."\n");
+		return 0;
+	}
+
 	return 1;
 }
 
 sub performAction {
-	my ($self, $deviceName, $deviceSwitchIdx, $targetState) = @_;
+	my ($self, $deviceName, $deviceSwitchIdx, $targetState, $noLogin) = @_;
 
 	# TODO: Is the gateway offline?
 	# TODO: Select gateway
-	my $success = $self->performLogin($self->{login}, $self->{password});
-	if($success){
-		$success = $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
-	}else{
+	my $success = 1;
+	if(!$noLogin){
+		$success = $self->performLogin($self->{login}, $self->{password});
+	}
+	if(!$success){
 		print 'Login failed. Aborting'."\n";
 		return 0;
 	}
-	if($success){
-		$success = $self->flipSwitch($deviceSwitchIdx, $targetState);
-	}else{
+	$success = $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
+	if(!$success){
 		print 'Unable to find switch quick control panel. Aborting'."\n";
 		return 0;
 	}
+	$success = $self->flipSwitch($deviceSwitchIdx, $targetState);
 	if(!$success){
 		print 'Unable to flip the switch'."\n";
+		return 0;
 	}
 	return $success;
 }

@@ -8,11 +8,16 @@
 # at /usr/share/perl5/site_perl/Selenium/Remote/Finders.pm line 26.
 #Unable to find device search field. Probably login failed.
 
+# TODO: Intercept SIGKILL / SIGTERM to gently kill geckodriver.
+
 use Config::INI::Reader;
 use Getopt::Std;
+use Net::DBus;
+use Net::DBus::Reactor;
 use Text::Trim;
 
 use KeempleAPI::SeleniumScrapper;
+use KeempleAPI::ScrapperDBusService;
 
 use utf8;
 no warnings 'utf8';
@@ -20,7 +25,7 @@ no warnings 'utf8';
 our $VERSION = '0.2';
 
 our %options = ();
-Getopt::Std::getopts('c:d:fghs:i:m', \%options);
+Getopt::Std::getopts('c:d:fghi:ks:m', \%options);
 
 sub VERSION_MESSAGE {
 	print "KeempleScrapper $VERSION\n";
@@ -31,18 +36,19 @@ sub HELP_MESSAGE {
 	print "Usage: KeempleScrapper.pl [-m] [-y] [-c \"config path\"] -d \"device name\" [-i switchIdx] -s targetState\n";
 	print "\n";
 	print "Options:\n";
-	print "-c	Configuration file path. Default is \"~/.keempleAPI.conf\".\n";
-	print "-d	Device full display name.\n";
-	print "-f	Fork - daemon mode.\n";
-	print "-g	Debug mode.\n";
-	print "-h	Help message.\n";
-	print "-i	Switch index. Starting with 1. Default is 1.\n";
-	print "-s	Target device state. \"1\" is on, \"0\" means off.\n";
-	print "-m	Disable headless mode. Default is \"on\". Useful for debugging.\n";
+	print "  -c	Configuration file path. Default is \"~/.keempleAPI.conf\".\n";
+	print "  -d	Device full display name.\n";
+	print "  -f	Fork - daemon mode.\n";
+	print "  -g	Debug mode.\n";
+	print "  -h	Help message.\n";
+	print "  -i	Switch index. Starting with 1. Default is 1.\n";
+	print "  -k	Kill all geckodrivers at startup. Default is not to.\n";
+	print "  -s	Target device state. \"1\" is on, \"0\" means off.\n";
+	print "  -m	Disable headless mode. Default is \"on\". Useful for debugging.\n";
 	exit(0);
 }
 
-if(defined($options{'h'}) || (!defined($options{'d'}) || !defined($options{'s'}))){
+if(defined($options{'h'}) || (!defined($options{'f'}) && (!defined($options{'d'}) || !defined($options{'s'})))){
 	VERSION_MESSAGE();
 	HELP_MESSAGE();
 	exit(-1);
@@ -84,17 +90,45 @@ sub toc {
 	print 'Execution time: '.($stopTime - $startTime).'s.'."\n";
 }
 
+sub initScrapper {
+	my ($configType, $options) = @_;
+	my ($login, $password, $driverType) = readConf($configPath);
+	$scrapper = new KeempleAPI::SeleniumScrapper(	driverType => $driverType,
+							disableHeadless => $options->{m},
+							login => $login,
+							password => $password,
+							debug => $options->{g});			
+}
 
 tic();
-my ($login, $password, $driverType) = readConf($configPath);
-$scrapper = new KeempleAPI::SeleniumScrapper(	driverType => $driverType,
-						disableHeadless => $options{m},
-						login => $login,
-						password => $password,
-						debug => $options{g});
 
-$scrapper->performAction($deviceName, $deviceSwitchIdx, $targetState);
+if($options{k}){
+	`killall geckodriver 2>/dev/null`;
+}
 
-$scrapper->cleanup();
+if($options{f}){
+	my $bus = Net::DBus->session();
+	my $service = $bus->export_service('KeempleAPI.ScrapperDBusService');
+
+	initScrapper($configType, \%options, $service);
+	my $scrapperServiceObj = KeempleAPI::ScrapperDBusService->new($service);
+	$scrapperServiceObj->initScrapper($scrapper);
+
+	my $reactor = Net::DBus::Reactor->main();
+	$reactor->run();
+}else{
+	initScrapper($configType, \%options);
+	$scrapper->performAction($deviceName, $deviceSwitchIdx, $targetState);
+}
+
+#undef($KeempleAPI::ScrapperDBusService::scrapperObj);
+#undef($scrapper);
+
+END {
+	if($scrapper){
+		$scrapper->cleanup();
+	}
+	sleep(2); # Let the browser die in peace.
+}
 
 toc();
