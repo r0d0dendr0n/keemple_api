@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=KeempleAPI.ScrapperDBusService
+Exec=/usr/local/bin/keempleScrapper -b

@@ -3,16 +3,15 @@
 # ./KeempleScrapper.pl ~/.keempleAPI.conf 'głośniki salon' 1 1
 # ./KeempleScrapper.pl ~/.keempleAPI.conf 'światło salon' 2 1
 
+# dbus-send --session --print-reply --dest="KeempleAPI.ScrapperDBusService" /KeempleAPI/ScrapperService KeempleAPI.ScrapperDBusService.performAction string:'Światło salon' int32:2 int32:1
+
 #Error while executing command: no such element: Unable to locate element: /html/body/div[1]/div/div/div/md-content/div[1]/div[1]/div[1]/div/md-chips/md-chips-wrap/div/div/md-autocomplete/md-autocomplete-wrap/input at /usr/share/perl5/site_perl/Selenium/Remote/Driver.pm line 403.
 # at /usr/share/perl5/site_perl/Selenium/Remote/Driver.pm line 353.
 # at /usr/share/perl5/site_perl/Selenium/Remote/Finders.pm line 26.
 #Unable to find device search field. Probably login failed.
 
-# TODO: Intercept SIGKILL / SIGTERM to gently kill geckodriver.
-
 use Config::INI::Reader;
 use Getopt::Std;
-use Net::DBus;
 use Net::DBus::Reactor;
 use Text::Trim;
 
@@ -22,10 +21,10 @@ use KeempleAPI::ScrapperDBusService;
 use utf8;
 no warnings 'utf8';
 
-our $VERSION = '0.2';
+our $VERSION = '0.3';
 
 our %options = ();
-Getopt::Std::getopts('c:d:fghi:ks:m', \%options);
+Getopt::Std::getopts('bc:d:fghi:ks:m', \%options);
 
 sub VERSION_MESSAGE {
 	print "KeempleScrapper $VERSION\n";
@@ -36,6 +35,7 @@ sub HELP_MESSAGE {
 	print "Usage: KeempleScrapper.pl [-m] [-y] [-c \"config path\"] -d \"device name\" [-i switchIdx] -s targetState\n";
 	print "\n";
 	print "Options:\n";
+	print "  -b	Start DBus daemon.\n";
 	print "  -c	Configuration file path. Default is \"~/.keempleAPI.conf\".\n";
 	print "  -d	Device full display name.\n";
 	print "  -f	Fork - daemon mode.\n";
@@ -48,10 +48,20 @@ sub HELP_MESSAGE {
 	exit(0);
 }
 
-if(defined($options{'h'}) || (!defined($options{'f'}) && (!defined($options{'d'}) || !defined($options{'s'})))){
+if(defined($options{'h'}) || (!defined($options{'b'}) && (!defined($options{'d'}) || !defined($options{'s'})))){
 	VERSION_MESSAGE();
 	HELP_MESSAGE();
 	exit(-1);
+}
+
+if($options{f}){
+	my $pid = fork;
+	die "Failed to fork: $!" unless defined $pid;
+	
+	if($pid != 0){
+		print STDERR 'Starting scrapper service.'."\n";
+		exit;
+	}
 }
 
 my $configPath = $options->{'c'} || $ENV{'HOME'}.'/.keempleAPI.conf';
@@ -61,6 +71,10 @@ my $targetState = $options{'s'};
 
 our $startTime = undef;
 our $scrapper = undef;
+
+# The END block doesn't terminate the geckodriver gently enough when receiving a SIGTERM or SIGKILL.
+$SIG{TERM} = sub { if($scrapper){ $scrapper->cleanup(); }; exit; };
+$SIG{KILL} = sub { if($scrapper){ $scrapper->cleanup(); }; exit; };
 
 sub readConf {
 	my $confPath = shift;
@@ -106,19 +120,24 @@ if($options{k}){
 	`killall geckodriver 2>/dev/null`;
 }
 
-if($options{f}){
-	my $bus = Net::DBus->session();
-	my $service = $bus->export_service('KeempleAPI.ScrapperDBusService');
-
-	initScrapper($configType, \%options, $service);
-	my $scrapperServiceObj = KeempleAPI::ScrapperDBusService->new($service);
+if($options{b}){
+	initScrapper($configType, \%options);
+	
+	my $scrapperServiceObj = KeempleAPI::ScrapperDBusService->new();
 	$scrapperServiceObj->initScrapper($scrapper);
 
 	my $reactor = Net::DBus::Reactor->main();
 	$reactor->run();
 }else{
-	initScrapper($configType, \%options);
-	$scrapper->performAction($deviceName, $deviceSwitchIdx, $targetState);
+	my $dbusService = KeempleAPI::ScrapperDBusService::checkIfInstanceIsAvailable();
+	if($dbusService){
+		print STDERR 'Using DBus method.'."\n";
+		$dbusService->performAction($deviceName, $deviceSwitchIdx, $targetState);
+	}else{
+		print STDERR 'Using standalone script.'."\n";
+		initScrapper($configType, \%options);
+		$scrapper->performAction($deviceName, $deviceSwitchIdx, $targetState);
+	}
 }
 
 #undef($KeempleAPI::ScrapperDBusService::scrapperObj);

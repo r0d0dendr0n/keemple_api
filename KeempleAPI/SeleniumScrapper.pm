@@ -11,6 +11,8 @@ no warnings 'utf8';
 # java -jar -Dwebdriver.gecko.driver=/usr/bin/geckodriver /usr/share/selenium-server/selenium-server-standalone.jar
 # DISPLAY=:1 xvfb-run java -jar selenium-server-standalone-2.0b3.jar
 
+# TODO: Handle bad password at init.
+
 sub new {
 	my $className = shift;
 	my %options = @_;
@@ -18,6 +20,7 @@ sub new {
 		driver => undef,
 		driverType => $options{driverType} || 'integrated',
 		disableHeadless => $options{disableHeadless},
+		lastDeviceName => '',
 		login => $options{login},
 		password => $options{password},
 		debug => $options{debug},
@@ -51,7 +54,7 @@ sub initDriver {
 			'marionette_enabled' => 1,
 			'extra_capabilities' => {
 				'moz:firefoxOptions' => {
-				"args" => $browserArgs,
+					"args" => $browserArgs,
 				},
 			},
 		);
@@ -134,7 +137,7 @@ sub performLogin {
 	
 	# TODO: Check if login and password fields are not empty.
 	my $cnt = 50;
-	while(!$found && $cnt>0){
+	while($cnt>0){
 		if($self->{driver}->get_current_url() eq 'https://login.keemple.com/gtw_settings'){
 			$self->dbgMsg('Url says we\'re in.');
 			return 1;
@@ -161,8 +164,18 @@ sub performLogout {
 
 sub findSwitchQuickControl {
 	my ($self, $deviceName) = @_;
-	
-	$self->{driver}->get('https://login.keemple.com/devices/quick_controls');
+	my $quickControlsUrl = 'https://login.keemple.com/devices/quick_controls';
+	if($self->{driver}->get_current_url() eq $quickControlsUrl){
+		$self->dbgMsg('Only clear the search field.'."\n");
+		my $clearField = $self->itemExists('/html/body/div[1]/div/div/div/md-content/div[1]/div[1]/div[1]/div/md-chips/md-chips-wrap/md-chip/div[2]/button/md-icon', 'xpath');
+		if($clearField){
+			$self->dbgMsg('Clicking field clear.'."\n");
+			$clearField->click();
+		}
+	}else{
+		$self->dbgMsg('Go to the quick controls url.'."\n");
+		$self->{driver}->get($quickControlsUrl);
+	}
 
 	my $searchField = $self->waitForField('/html/body/div[1]/div/div/div/md-content/div[1]/div[1]/div[1]/div/md-chips/md-chips-wrap/div/div/md-autocomplete/md-autocomplete-wrap/input', 'xpath');
 	if(!$searchField){
@@ -170,6 +183,7 @@ sub findSwitchQuickControl {
 		return 0;
 	}
 	$searchField->send_keys($deviceName, KEYS->{'enter'});
+	$self->{lastDeviceName} = $deviceName;
 	
 	sleep(1);
 }
@@ -209,17 +223,20 @@ sub flipSwitch {
 	# Try light switch
 	my $switchXPath = '/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div['.$deviceSwitchIdx.']/div/div/div';
 	my $switchField = $self->itemExists($switchXPath, 'xpath');
-	if($switchField){
-#		$self->{driver}->mouse_move_to_location($switchField, 10, 10);
-#		$self->{driver}->click();
-		# https://stackoverflow.com/questions/44912203/selenium-web-driver-java-element-is-not-clickable-at-point-x-y-other-elem
-		$switchField->click();
+	if(!$switchField){
+		$self->dbgMsg('Error: Unable to find switch item!'."\n");
+		return 0;
+	}
+#	$self->{driver}->mouse_move_to_location($switchField, 10, 10);
+#	$self->{driver}->click();
+	# https://stackoverflow.com/questions/44912203/selenium-web-driver-java-element-is-not-clickable-at-point-x-y-other-elem
+	if($switchField->click()){
 		print 'Switch flipped!'."\n"; # TODO 2nd check of switchStateElement?
 	}else{
 		$self->dbgMsg('Error: Unable to flip switch!'."\n");
 		return 0;
 	}
-
+	
 	return 1;
 }
 
@@ -228,6 +245,7 @@ sub performAction {
 
 	# TODO: Is the gateway offline?
 	# TODO: Select gateway
+	# TODO: Allow direct switch flipping, without the need to find the proper controls via search field. (This allows us to have uber speed like 0.25s!)
 	my $success = 1;
 	if(!$noLogin){
 		$success = $self->performLogin($self->{login}, $self->{password});
@@ -236,7 +254,12 @@ sub performAction {
 		print 'Login failed. Aborting'."\n";
 		return 0;
 	}
-	$success = $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
+	if($deviceName ne $self->{lastDeviceName}){
+		if($self->{lastDeviceName} ne ''){
+			$self->dbgMsg('Last device name is different than this. Must clear the search field.'."\n");
+		}
+		$success = $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
+	}
 	if(!$success){
 		print 'Unable to find switch quick control panel. Aborting'."\n";
 		return 0;
@@ -261,7 +284,7 @@ sub cleanup {
 sub dbgMsg {
 	my ($self, $msg) = @_;
 	if($self->{debug}){
-		warn $msg;
+		print STDERR $msg;
 	}
 }
 
