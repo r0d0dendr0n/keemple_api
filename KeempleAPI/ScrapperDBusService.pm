@@ -54,11 +54,34 @@ sub reinitScrapper {
 	return;
 }
 
+dbus_method('findNearestSwitchName', ['string'], ['string'], { param_names => ['deviceName'], return_names => ['reply'] });
+sub findNearestSwitchName {
+	my ($self, $deviceName) = @_;
+	# Strings comes encoded, so we need to decode them, unless we want some shitty characters.
+	my $name = $scrapperObj->getCachedSwitchName(decode_utf8($deviceName));
+	return $name;
+}
+
+dbus_method('reloadSwitches', []);
+sub reloadSwitches {
+	my ($self) = @_;
+	
+	$scrapperObj->getSwitches(1);
+}
+
+dbus_method('refreshSwitches', []);
+sub refreshSwitches {
+	my ($self) = @_;
+	
+	$scrapperObj->refreshSwitches();
+}
+
 sub initScrapper {
 	my ($self, $scrapper) = @_;
 	my $success = $scrapper->performLogin($scrapper->{login}, $scrapper->{password});
 	if($success){
 		$scrapperObj = $scrapper;
+		$scrapper->refreshSwitches();
 	}else{
 		print 'Login failed. Aborting'."\n";
 		return 0;

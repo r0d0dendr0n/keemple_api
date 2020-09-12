@@ -129,15 +129,18 @@ if($options{b}){
 	my $reactor = Net::DBus::Reactor->main();
 	$reactor->run();
 }else{
-	my $dbusService = KeempleAPI::ScrapperDBusService::checkIfInstanceIsAvailable();
-	if($dbusService){
-		print STDERR 'Using DBus method.'."\n";
-		$dbusService->performAction($deviceName, $deviceSwitchIdx, $targetState);
-	}else{
+#	my $dbusService = KeempleAPI::ScrapperDBusService::checkIfInstanceIsAvailable();
+#	if($dbusService){
+#		print STDERR 'Using DBus method.'."\n";
+#		$dbusService->performAction($deviceName, $deviceSwitchIdx, $targetState);
+#	}else{
 		print STDERR 'Using standalone script.'."\n";
 		initScrapper($configType, \%options);
-		$scrapper->performAction($deviceName, $deviceSwitchIdx, $targetState);
-	}
+		use Data::Dump;
+		Data::Dump::dump $scrapper->getSwitches();
+#		Data::Dump::dump $scrapper->refreshSwitchesStates(); # TODO?
+#		$scrapper->performAction($deviceName, $deviceSwitchIdx, $targetState);
+#	}
 }
 
 #undef($KeempleAPI::ScrapperDBusService::scrapperObj);

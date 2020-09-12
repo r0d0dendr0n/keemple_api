@@ -2,6 +2,7 @@ package KeempleAPI::SeleniumScrapper;
 
 use Selenium::Firefox;
 use Selenium::Remote::WDKeys;
+use Text::Fuzzy;
 use Text::Trim;
 use Try::Tiny;
 
@@ -21,6 +22,9 @@ sub new {
 		driverType => $options{driverType} || 'integrated',
 		disableHeadless => $options{disableHeadless},
 		lastDeviceName => '',
+		controlsRefreshed => 0,
+		enableWebSearch => 0,
+		switches => undef,
 		login => $options{login},
 		password => $options{password},
 		debug => $options{debug},
@@ -57,6 +61,7 @@ sub initDriver {
 					"args" => $browserArgs,
 				},
 			},
+			#'accept_ssl_certs' => 1,
 		);
 	}else{
 		print 'Unknown driver type: "'.$driverType.'". Must be one of "standalone" or "integrated".'."\n";
@@ -87,8 +92,8 @@ sub itemExists {
 	my ($self, $elementId, $elementType) = (shift, shift, shift || 'id');
 	try {
 		$self->dbgMsg('Checking if item exists: '.$elementId);
-		my $element = $self->{driver}->find_element($elementId, $elementType);
-		return $element;
+		my $element = $self->{driver}->find_elements($elementId, $elementType);
+		return $element->[0];
 	} catch {
 		return 0;
 	};
@@ -97,11 +102,18 @@ sub itemExists {
 sub performLogin {
 	my ($self, $login, $password) = @_;
 	
+	my $currentUrl = $self->{driver}->get_current_url();
+	if($currentUrl =~ m|^https://login.keemple.com/.+| && !$self->itemExists('inputIdentity')){
+		$self->dbgMsg('Already logged in (no url changed): '.$currentUrl);
+		return 1;
+	}
+
+	# On a different site, but still logged in?	
 	$self->{driver}->get('https://login.keemple.com');
 	
-	my $currentUrl = $self->{driver}->get_current_url();
-	if(!$self->itemExists('inputIdentity') && $currentUrl ne 'https://login.keemple.com/login'){ #$currentUrl eq 'https://login.keemple.com/gtw_settings'){
-		$self->dbgMsg('Already logged in: '.$currentUrl);
+	$currentUrl = $self->{driver}->get_current_url();
+	if($currentUrl ne 'https://login.keemple.com/login' && $currentUrl ne 'https://login.keemple.com/gtw_settings' && !$self->itemExists('inputIdentity')){ #$currentUrl eq 'https://login.keemple.com/gtw_settings'){
+		$self->dbgMsg('Already logged in (after going to login page): '.$currentUrl);
 		return 1;
 	}
 	
@@ -109,7 +121,7 @@ sub performLogin {
 	if(!$loginField){
 		# Already logged in?
 		if($self->{driver}->get_current_url() eq 'https://login.keemple.com/gtw_settings'){
-			$self->dbgMsg('Already logged in');
+			$self->dbgMsg('Already logged in (after logging in)');
 			return 1;
 		}
 		$self->dbgMsg('Unable to find login field.');
@@ -162,19 +174,30 @@ sub performLogout {
 	$self->{driver}->get('https://login.keemple.com/auth/logout');
 }
 
-sub findSwitchQuickControl {
-	my ($self, $deviceName) = @_;
+sub gotoQuickControlList {
+	my ($self) = @_;
+	
 	my $quickControlsUrl = 'https://login.keemple.com/devices/quick_controls';
 	if($self->{driver}->get_current_url() eq $quickControlsUrl){
+		return 0;
+	}
+	$self->dbgMsg('Go to the quick controls url.'."\n");
+	$self->{driver}->get($quickControlsUrl);
+	
+	return 1;
+}
+
+sub findSwitchQuickControl {
+	my ($self, $deviceName) = @_;
+	
+	my $quickControlsStatus = $self->gotoQuickControlList();
+	if($quickControlsStatus == 0){
 		$self->dbgMsg('Only clear the search field.'."\n");
 		my $clearField = $self->itemExists('/html/body/div[1]/div/div/div/md-content/div[1]/div[1]/div[1]/div/md-chips/md-chips-wrap/md-chip/div[2]/button/md-icon', 'xpath');
 		if($clearField){
 			$self->dbgMsg('Clicking field clear.'."\n");
 			$clearField->click();
 		}
-	}else{
-		$self->dbgMsg('Go to the quick controls url.'."\n");
-		$self->{driver}->get($quickControlsUrl);
 	}
 
 	my $searchField = $self->waitForField('/html/body/div[1]/div/div/div/md-content/div[1]/div[1]/div[1]/div/md-chips/md-chips-wrap/div/div/md-autocomplete/md-autocomplete-wrap/input', 'xpath');
@@ -188,8 +211,250 @@ sub findSwitchQuickControl {
 	sleep(1);
 }
 
-sub flipSwitch {
-	my ($self, $deviceSwitchIdx, $targetState) = @_;
+sub getCachedSwitchName {
+	my ($self, $deviceName) = @_;
+	
+	my @switchesNames = keys %{$self->{switches}};
+	my $tf = Text::Fuzzy->new($deviceName);
+	my $nearest = $tf->nearestv(\@switchesNames);
+	
+	$self->dbgMsg('Closest cached: '.$nearest);
+	
+	return $nearest;
+}
+
+sub getCachedSwitchControl {
+	my ($self, $deviceName, $deviceSwitchIdx) = @_;
+	
+	my $nearest = $self->getCachedSwitchName($deviceName);
+	$self->dbgMsg('Nearest to '.$deviceName.' is: '.$nearest);
+	
+	if(!$nearest){
+		$self->dbgMsg('Nearest is null.');
+		return undef;
+	}
+	
+	if(!defined($self->{switches}->{$nearest})){
+		$self->dbgMsg('Nearest in switches is null.');
+		return undef;
+	}
+	
+	if(!defined($self->{switches}->{$nearest}->{$deviceSwitchIdx})){
+		my @keys = keys %{$self->{switches}->{$nearest}};
+		$self->dbgMsg('Switch id '.$deviceSwitchIdx.' of nearest in switches. Available are: '.Data::Dump::dump(\@keys));
+		return undef;
+	}
+	
+	return $self->{switches}->{$nearest}->{$deviceSwitchIdx};
+}
+
+sub getSwitchQuickControl {
+	my ($self, $deviceName, $deviceSwitchIdx) = @_;
+	
+	if(!$self->{controlsRefreshed}){
+		return undef;
+	}
+	
+	my $element = $self->getCachedSwitchControl($deviceName, $deviceSwitchIdx);
+	#$self->{last_element} = $element->{'element'};
+	if(!$element){
+		return $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
+	}
+	
+	return $element;
+}
+
+sub getSwitches {
+	my ($self, $force) = @_;
+	
+	if(!$force && defined($self->{switches})){
+		return $self->{switches};
+	}
+	
+	my $success = 1;
+	$success = $self->performLogin($self->{login}, $self->{password});
+	if(!$success){
+		print 'Login failed. Aborting'."\n";
+		return 0;
+	}
+	my $quickControlsStatus = $self->gotoQuickControlList();
+	
+#	whole element div
+#	/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe
+
+#	Label
+#	/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/quick-control-header/md-toolbar/div/label
+#	/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[2]/md-whiteframe/quick-control-header/md-toolbar/div/label
+#	/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[3]/md-whiteframe/quick-control-header/md-toolbar/div/label
+
+#	Device nr 1, switch nr 1
+#	/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div[1]/div/div/label
+#	Device nr 1, switch nr 2
+#	/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/div/div[2]/div/div/label
+
+#						 /html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/quick-control-header/md-toolbar/div/label
+#						 /html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[2]/md-whiteframe/quick-control-header/md-toolbar/div/label
+
+	my $implicitTimeout = $self->{driver}->get_timeouts()->{'implicit'};
+	my $switches = {};
+	my $labelObjectsXPath = '/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span/md-whiteframe';
+	my $labelObjects = $self->{driver}->find_elements($labelObjectsXPath, 'xpath');
+	$self->{driver}->set_timeout('implicit', 100);
+	foreach my $elem (@{$labelObjects}){
+		my $labelElem = $self->{driver}->find_child_elements($elem, './quick-control-header/md-toolbar/div/label');
+		my $deviceLabel = $labelElem->[0]->get_text();
+		$self->dbgMsg('Found device: '.$deviceLabel);
+		
+		my $elemSwitches = {};
+		my $switchObjects = $self->{driver}->find_child_elements($elem, './div/div/div/div/label', 'xpath');
+		my $switchId = 1;
+		foreach my $switchElem (@{$switchObjects}){
+			if(!$switchElem){
+				last;
+			}
+			my $switchLabel = $switchElem->get_text();
+			my $switchStateXPath = './div/div['.$switchId.']/div/div/div/md-switch';
+			my $switchXPath = './div/div['.$switchId.']/div/div/div';
+			my $switchStateElement = $self->{driver}->find_child_elements($elem, $switchStateXPath, 'xpath');
+			my $switchElement = ($switchStateElement ? $self->{driver}->find_child_elements($elem, $switchXPath, 'xpath') : undef);
+			if(scalar(@{$switchStateElement})==0 || scalar(@{$switchElement})==0){
+				$self->dbgMsg('Unable to fetch switch '.$switchId.' current state');
+				$switchId++;
+				next;
+			}
+			my $val = $self->getSwitchElementValue($switchStateElement);
+			$elemSwitches->{$switchId} = {'element' => $switchElement->[0], 'elementXPath' => $labelObjectsXPath.substr($switchXPath, 1), 'stateElement' => $labelObjectsXPath.substr($switchStateElement, 1), 'stateElementXPath' => $labelObjectsXPath.substr($switchStateXPath, 1), 'value' => $val};
+			$self->dbgMsg('Found switch id '.$switchId.' name '.$switchLabel.' value '.$val);
+			$switchId++;
+		}
+		$switches->{$deviceLabel} = $elemSwitches;
+	}
+	
+	$self->{driver}->set_timeout('implicit', $implicitTimeout);
+	$self->{switches} = $switches;
+	
+	$self->dbgMsg('Controls set!');
+	$self->{controlsRefreshed} = 1;
+	
+	return $switches;
+
+#	my $arr = $self->{driver}->find_elements('/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span/md-whiteframe/quick-control-header/md-toolbar/div/label', 'xpath');
+#	
+#	foreach my $el (@{$arr}){
+#		warn $el->get_text();
+#	}
+}
+
+sub refreshSwitches {
+	my ($self) = @_;
+	
+	if(!defined($self->{switches})){
+		return $self->getSwitches(1);
+	}
+	
+	my $quickControlsStatus = $self->gotoQuickControlList();
+	
+	my $implicitTimeout = $self->{driver}->get_timeouts()->{'implicit'};
+	$self->{driver}->set_timeout('implicit', 100);
+	foreach my $deviceLabel (keys %{$self->{switches}}){
+		$self->dbgMsg('Refreshing device: '.$deviceLabel);
+		foreach my $switchId (keys %{$self->{switches}->{$deviceLabel}}){
+			my $switchStruct = $self->{switches}->{$deviceLabel}->{$switchId};
+			my $switchStateElement = $self->itemExists($switchStruct->{'stateElementXPath'}, 'xpath');
+			if(!$switchStateElement){
+				$self->dbgMsg('Unable to fetch switch '.$switchId.' current state');
+				next;
+			}
+			my $val = $self->getSwitchElementValue([$switchStateElement]); # Inside it neets to be in an arrayref.
+			#$elemSwitches->{$switchId} = {'element' => $switchStateElement, 'value' => $val}; # TODO: element != stateElement
+			if($switchStruct->{'value'} != $val){
+				$self->dbgMsg('New value for switch id '.$switchId.': '.$val);
+				$self->{switches}->{$deviceLabel}->{$switchId}->{'value'} = $val;
+			}
+		}
+	}
+	
+	$self->{driver}->set_timeout('implicit', $implicitTimeout);
+	
+	$self->dbgMsg('Controls refreshed!');
+	$self->{controlsRefreshed} = 1;
+	
+	return $self->{switches};
+
+#	my $arr = $self->{driver}->find_elements('/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span/md-whiteframe/quick-control-header/md-toolbar/div/label', 'xpath');
+#	
+#	foreach my $el (@{$arr}){
+#		warn $el->get_text();
+#	}
+}
+
+sub getSwitchElementValue {
+	my ($self, $switchStateElement) = @_;
+	if(ref($switchStateElement) ne 'ARRAY'){
+		$self->dbgMsg('Unable to fetch switch element value!');
+		return undef;
+	}
+	my $switchState = $switchStateElement->[0]->get_attribute('aria-checked', 1);
+	return ($switchState eq 'true' ? 1 : 0);
+}
+
+sub flipSwitchCached {
+	my ($self, $deviceName, $deviceSwitchIdx, $targetState) = @_;
+	
+	$self->dbgMsg('Cached flip.');
+	if(!$self->{controlsRefreshed}){
+		$self->dbgMsg('Controls not refreshed');
+		return 0;
+	}
+	
+	my $switchStruct = $self->getCachedSwitchControl($deviceName, $deviceSwitchIdx);
+	if(ref($switchStruct) ne 'HASH'){
+		$self->dbgMsg('SwitchStruct is null');
+		return 0;
+	}
+	my $switchField = $switchStruct->{'element'};
+	if(!$switchField){
+		$self->dbgMsg('SwitchField is null');
+		return 0;
+	}
+	my $switchValue = $switchStruct->{'value'};
+	print 'Was: '.$switchValue."\n";
+	if($targetState == $switchValue){
+		print 'Already in target state: '.$targetState.'.'."\n";
+		return 1;
+	}
+	my $success = undef;
+	try {
+		$success = $switchField->click(); # Elements tend to get "stale";
+	} catch {
+		$switchField = $self->itemExists($switchStruct->{'elementXPath'}, 'xpath');
+		$success = $switchField->click();
+	};
+	if($success){
+		$switchStruct->{'value'} = $targetState; # TODO: This should be an event, sent by the driver.
+		print 'Switch flipped!'."\n"; # TODO 2nd check of switchStateElement?
+	}else{
+		$self->dbgMsg('Error: Unable to flip switch!'."\n");
+		return 0;
+	}
+	return 1;
+}
+
+sub flipSwitchNotCached {
+	my ($self, $deviceName, $deviceSwitchIdx, $targetState) = @_;
+	
+	$self->dbgMsg('Not cached flip.');
+	if($deviceName ne $self->{lastDeviceName}){
+		if($self->{lastDeviceName} ne ''){
+			$self->dbgMsg('Last device name is different than this. Must clear the search field.'."\n");
+		}
+		$success = $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
+	}
+	if(!$success){
+		print 'Unable to find switch quick control panel. Aborting'."\n";
+		return 0;
+	}
+	
 	# Światło
 	#Nazwy okienek urządzeń (labele):
 	#1: /html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span[1]/md-whiteframe/quick-control-header/md-toolbar/div/label
@@ -212,9 +477,10 @@ sub flipSwitch {
 		$self->dbgMsg('Unable to fetch switch current state');
 		return 0;
 	}
-	my $switchState = $switchStateElement->get_attribute('aria-checked', 1);
-	print 'Was: '.($switchState eq 'true' ? 1 : 0).' (raw value: '.$switchState.')'."\n";
-	if(($targetState eq '1' && $switchState eq 'true') || ($targetState eq '0' && $switchState eq 'false')){
+	#my $switchState = $switchStateElement->get_attribute('aria-checked', 1);
+	my $switchValue = $self->getSwitchElementValue($switchStateElement);
+	print 'Was: '.$switchValue."\n";
+	if($targetState == $switchValue){
 		print 'Already in target state: '.$targetState.'.'."\n";
 		return 1;
 	}
@@ -240,6 +506,18 @@ sub flipSwitch {
 	return 1;
 }
 
+sub flipSwitch {
+	my ($self, $deviceName, $deviceSwitchIdx, $targetState) = @_;
+	
+	if($self->{enableWebSearch}){
+		$success = $self->flipSwitchNotCached($deviceName, $deviceSwitchIdx, $targetState);
+	}else{
+		$success = $self->flipSwitchCached($deviceName, $deviceSwitchIdx, $targetState);
+	}
+	
+	return $success;
+}
+
 sub performAction {
 	my ($self, $deviceName, $deviceSwitchIdx, $targetState, $noLogin) = @_;
 
@@ -254,17 +532,7 @@ sub performAction {
 		print 'Login failed. Aborting'."\n";
 		return 0;
 	}
-	if($deviceName ne $self->{lastDeviceName}){
-		if($self->{lastDeviceName} ne ''){
-			$self->dbgMsg('Last device name is different than this. Must clear the search field.'."\n");
-		}
-		$success = $self->findSwitchQuickControl($deviceName, $deviceSwitchIdx);
-	}
-	if(!$success){
-		print 'Unable to find switch quick control panel. Aborting'."\n";
-		return 0;
-	}
-	$success = $self->flipSwitch($deviceSwitchIdx, $targetState);
+	$success = $self->flipSwitch($deviceName, $deviceSwitchIdx, $targetState);
 	if(!$success){
 		print 'Unable to flip the switch'."\n";
 		return 0;
@@ -284,7 +552,7 @@ sub cleanup {
 sub dbgMsg {
 	my ($self, $msg) = @_;
 	if($self->{debug}){
-		print STDERR $msg;
+		print STDERR $msg."\n";
 	}
 }
 
