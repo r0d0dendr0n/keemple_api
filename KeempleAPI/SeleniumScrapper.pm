@@ -13,6 +13,7 @@ no warnings 'utf8';
 # DISPLAY=:1 xvfb-run java -jar selenium-server-standalone-2.0b3.jar
 
 # TODO: Handle bad password at init.
+# TODO: Implement a timeout subroutine to periodicaly refresh states or hook to some Selenium stuff for this data.
 
 sub new {
 	my $className = shift;
