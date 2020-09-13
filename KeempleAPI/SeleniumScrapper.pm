@@ -301,6 +301,7 @@ sub getSwitches {
 	my $labelObjectsXPath = '/html/body/div[1]/div/div/div/md-content/div[1]/div[2]/div/div/div/span/md-whiteframe';
 	my $labelObjects = $self->{driver}->find_elements($labelObjectsXPath, 'xpath');
 	$self->{driver}->set_timeout('implicit', 100);
+	my $spanId = 1;
 	foreach my $elem (@{$labelObjects}){
 		my $labelElem = $self->{driver}->find_child_elements($elem, './quick-control-header/md-toolbar/div/label');
 		my $deviceLabel = $labelElem->[0]->get_text();
@@ -324,11 +325,12 @@ sub getSwitches {
 				next;
 			}
 			my $val = $self->getSwitchElementValue($switchStateElement);
-			$elemSwitches->{$switchId} = {'element' => $switchElement->[0], 'elementXPath' => $labelObjectsXPath.substr($switchXPath, 1), 'stateElement' => $labelObjectsXPath.substr($switchStateElement, 1), 'stateElementXPath' => $labelObjectsXPath.substr($switchStateXPath, 1), 'value' => $val};
+			$elemSwitches->{$switchId} = {'id' => $spanId, 'element' => $switchElement->[0], 'elementXPath' => $labelObjectsXPath.substr($switchXPath, 1), 'stateElement' => $labelObjectsXPath.substr($switchStateElement, 1), 'stateElementXPath' => $labelObjectsXPath.substr($switchStateXPath, 1), 'value' => $val};
 			$self->dbgMsg('Found switch id '.$switchId.' name '.$switchLabel.' value '.$val);
 			$switchId++;
 		}
 		$switches->{$deviceLabel} = $elemSwitches;
+		$spanId++;
 	}
 	
 	$self->{driver}->set_timeout('implicit', $implicitTimeout);
@@ -361,7 +363,10 @@ sub refreshSwitches {
 		$self->dbgMsg('Refreshing device: '.$deviceLabel);
 		foreach my $switchId (keys %{$self->{switches}->{$deviceLabel}}){
 			my $switchStruct = $self->{switches}->{$deviceLabel}->{$switchId};
-			my $switchStateElement = $self->itemExists($switchStruct->{'stateElementXPath'}, 'xpath');
+			my $switchStateXPath = $switchStruct->{'stateElementXPath'};
+			my $elemId = $switchStruct->{'id'};
+			$switchStateXPath =~ s|/span/|/span[$elemId]/|;
+			my $switchStateElement = $self->itemExists($switchStateXPath, 'xpath');
 			if(!$switchStateElement){
 				$self->dbgMsg('Unable to fetch switch '.$switchId.' current state');
 				next;
@@ -396,6 +401,7 @@ sub getSwitchElementValue {
 		return undef;
 	}
 	my $switchState = $switchStateElement->[0]->get_attribute('aria-checked', 1);
+	$self->dbgMsg('aria-checked value: '.$switchState);
 	return ($switchState eq 'true' ? 1 : 0);
 }
 
